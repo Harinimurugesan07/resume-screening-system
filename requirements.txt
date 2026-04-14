@@ -1,8 +1,8 @@
 streamlit
-scikit
-pandas
-numpy
-pyPDF2
-re
+pytesseract
+PyPDF2
 docx2txt
- joblib
+scikit-learn
+Pillow
+numpy
+pandas
