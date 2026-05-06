@@ -5,41 +5,33 @@ import docx2txt
 from sklearn.metrics.pairwise import cosine_similarity
 import pytesseract
 from PIL import Image
-import requests
-
-
-# ---------------- API FUNCTION ---------------- #
-
-def analyze_resume_api(resume_text):
-
-    url = "http://127.0.0.1:8000/predict"
-
-    try:
-        response = requests.post(url, json={"resume": resume_text})
-        return response.json()
-
-    except Exception as e:
-        return {"error": str(e)}
-
+import pandas as pd
+import re
+import os
 
 # ---------------- PAGE CONFIG ---------------- #
 
 st.set_page_config(
-    page_title="AI Resume Screening System",
+    page_title="AI ATS Resume Screening System",
     page_icon="📄",
     layout="wide"
 )
 
-st.title("📄 AI Resume Screening Dashboard")
-st.markdown("Upload a resume and analyze candidate profile using AI.")
+st.title("📄 AI ATS Resume Screening Dashboard")
+st.markdown("Smart candidate ranking system for recruiters")
 
 st.divider()
 
+# ---------------- LOAD MODEL ---------------- #
 
-# ---------------- TESSERACT PATH ---------------- #
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+model = joblib.load(os.path.join(BASE_DIR, "resume_classifier_model.pkl"))
+vectorizer = joblib.load(os.path.join(BASE_DIR, "tfidf_vectorizer.pkl"))
+
+# ---------------- TESSERACT ---------------- #
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
 
 # ---------------- SKILL LIST ---------------- #
 
@@ -49,179 +41,149 @@ skills_list = [
     "react","node","html","css","power bi","tableau","aws","docker","kubernetes"
 ]
 
+# ---------------- CLEAN FUNCTION ---------------- #
 
-# ---------------- LOAD MODEL ---------------- #
-
-model = joblib.load("resume_classifier_model.pkl")
-vectorizer = joblib.load("tfidf_vectorizer.pkl")
-
+def clean_resume(text):
+    text = re.sub(r"http\S+|www\S+|https\S+", '', text)
+    text = re.sub(r'\@\w+|\#','', text)
+    text = re.sub('[^A-Za-z ]+', ' ', text)
+    return text.lower()
 
 # ---------------- SKILL EXTRACTION ---------------- #
 
 def extract_skills(text):
-
-    found_skills = []
     text = text.lower()
+    return [skill for skill in skills_list if skill in text]
 
-    for skill in skills_list:
-        if skill in text:
-            found_skills.append(skill)
+# ---------------- TEXT EXTRACTION ---------------- #
 
-    return found_skills
+def extract_text(file):
 
-
-# ---------------- RESUME TEXT EXTRACTION ---------------- #
-
-def extract_text_from_file(uploaded_file):
-
-    file_type = uploaded_file.name.split(".")[-1].lower()
+    file_type = file.name.split(".")[-1].lower()
     text = ""
 
-    try:
+    if file_type == "pdf":
+        reader = PyPDF2.PdfReader(file)
+        for page in reader.pages:
+            if page.extract_text():
+                text += page.extract_text()
 
-        if file_type == "pdf":
+    elif file_type == "docx":
+        text = docx2txt.process(file)
 
-            reader = PyPDF2.PdfReader(uploaded_file)
+    elif file_type == "txt":
+        text = file.read().decode("utf-8")
 
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text
+    elif file_type in ["jpg","jpeg","png"]:
+        image = Image.open(file).convert("L")
+        text = pytesseract.image_to_string(image)
 
-
-        elif file_type == "docx":
-
-            text = docx2txt.process(uploaded_file)
-
-
-        elif file_type == "txt":
-
-            text = uploaded_file.read().decode("utf-8")
-
-
-        elif file_type in ["jpg","jpeg","png"]:
-
-            image = Image.open(uploaded_file)
-            image = image.convert("L")
-
-            text = pytesseract.image_to_string(image)
-
-
-        return text.strip()
-
-    except Exception as e:
-
-        st.error(f"Error extracting text: {e}")
-        return ""
-
+    return text
 
 # ---------------- SIDEBAR ---------------- #
 
-st.sidebar.title("📊 Resume Screening System")
+st.sidebar.header("⚙ Recruiter Settings")
 
-st.sidebar.info(
-"""
-AI powered system that helps HR teams:
+must_have = st.sidebar.text_input("Must-Have Skills (comma separated)")
+nice_to_have = st.sidebar.text_input("Nice-to-Have Skills")
+min_exp = st.sidebar.slider("Minimum Experience (Years)", 0, 10)
+weight = st.sidebar.slider("Skills Weight (%)", 0, 100, 70)
 
-✔ Screen resumes  
-✔ Detect candidate skills  
-✔ Predict job category  
-✔ Calculate resume-job match score
-"""
+bias_mode = st.sidebar.checkbox("🛡 Enable Bias Shield Mode")
+
+# Convert skills
+must_have_list = [s.strip().lower() for s in must_have.split(",") if s]
+nice_to_have_list = [s.strip().lower() for s in nice_to_have.split(",") if s]
+
+# ---------------- FILE UPLOAD ---------------- #
+
+uploaded_files = st.file_uploader(
+    "📂 Upload Multiple Resumes",
+    type=["pdf","docx","txt","jpg","jpeg","png"],
+    accept_multiple_files=True
 )
 
-st.sidebar.markdown("Developed using **Machine Learning + NLP**")
+job_description = st.text_area("📝 Paste Job Description")
 
+# ---------------- PROCESS ---------------- #
 
-# ---------------- LAYOUT ---------------- #
+if uploaded_files:
 
-col1, col2 = st.columns(2)
+    results = []
 
-with col1:
+    for file in uploaded_files:
 
-    uploaded_file = st.file_uploader(
-        "📂 Upload Resume",
-        type=["pdf","docx","txt","jpg","jpeg","png"]
-    )
+        resume_text = extract_text(file)
 
-with col2:
+        if not resume_text:
+            continue
 
-    job_description = st.text_area(
-        "📝 Paste Job Description",
-        height=200
-    )
+        cleaned = clean_resume(resume_text)
+        skills = extract_skills(cleaned)
 
-
-# ---------------- PROCESS RESUME ---------------- #
-
-if uploaded_file is not None:
-
-    st.divider()
-
-    st.subheader("📁 Uploaded Resume")
-    st.write(uploaded_file.name)
-
-    resume_text = extract_text_from_file(uploaded_file)
-
-    if resume_text:
-
-        # ---------------- SKILLS ---------------- #
-
-        skills = extract_skills(resume_text)
-
-        st.subheader("🧾 Detected Skills")
-
-        if skills:
-
-            skill_cols = st.columns(4)
-
-            for i, skill in enumerate(skills):
-                skill_cols[i % 4].success(skill)
-
-        else:
-
-            st.warning("No skills detected")
-
-
-       
-
-        # ---------------- JOB CATEGORY ---------------- #
-
-        if st.button("🔍 Analyze Resume"):
-            st.subheader("🤖 Predicted Job Category")
-            result = analyze_resume_api(resume_text)
-            if "prediction" in result:
-                st.success(result["prediction"])
-            else:
-                st.error("API Error")
-                st.write(result)
+        # ---------------- HARD FILTER ---------------- #
+        if must_have_list:
+            if not all(skill in cleaned for skill in must_have_list):
+                continue
 
         # ---------------- MATCH SCORE ---------------- #
+        resume_vec = vectorizer.transform([cleaned])
 
         if job_description:
+            jd_vec = vectorizer.transform([job_description])
+            similarity = cosine_similarity(resume_vec, jd_vec)[0][0]
+        else:
+            similarity = 0
 
-            jd_vector = vectorizer.transform([job_description])
-            resume_vector = vectorizer.transform([resume_text])
+        # ---------------- EXPERIENCE (simple logic) ---------------- #
+        exp_score = 1 if min_exp == 0 else 0.5
 
-            similarity = cosine_similarity(resume_vector, jd_vector)
+        # ---------------- FINAL SCORE ---------------- #
+        final_score = (similarity * (weight/100)) + (exp_score * (1 - weight/100))
+        final_score = round(final_score * 100, 2)
 
-            match_score = round(similarity[0][0] * 100, 2)
+        # ---------------- PREDICTION ---------------- #
+        prediction = model.predict(resume_vec)[0]
 
-            st.subheader("📊 ATS Resume Match Score")
+        # ---------------- SKILL GAP ---------------- #
+        missing_skills = [s for s in must_have_list if s not in skills]
+        strength_skills = [s for s in skills if s in must_have_list or s in nice_to_have_list]
+        # ---------------- BIAS MODE ---------------- #
+        display_name = file.name
+        if bias_mode:
+            display_name = f"Candidate_{len(results)+1}"
 
-            st.metric("Match Score", f"{match_score}%")
+        results.append({
+            "Candidate": display_name,
+            "Score": final_score,
+            "Category": prediction,
+            "Skills": ", ".join(skills),
+            "Strengths": ", ".join(strength_skills),
+            "Missing Skills": ", ".join(missing_skills)
+        })
 
-            st.progress(int(match_score))
+    # ---------------- DISPLAY RESULTS ---------------- #
 
+    if results:
 
-            if match_score > 70:
+        df = pd.DataFrame(results)
+        df = df.sort_values(by="Score", ascending=False)
 
-                st.success("✅ Strong Match - Candidate Highly Suitable")
+        st.subheader("🏆 Candidate Ranking")
+        st.dataframe(df, use_container_width=True)
 
-            elif match_score > 40:
+        # Highlight Top Candidate
+        top = df.iloc[0]
 
-                st.warning("⚠ Moderate Match - Candidate May Fit")
+        st.subheader("🥇 Top Candidate")
+        st.success(f"{top['Candidate']} - {top['Score']}% Match")
 
-            else:
+        st.metric("Score", f"{top['Score']}%")
 
-                st.error("❌ Low Match - Candidate Not Suitable")
+        st.progress(int(top['Score']))
+
+    else:
+        st.warning("No candidates matched the criteria")
+
+else:
+    st.info("Upload resumes to begin analysis")
